@@ -8,11 +8,12 @@ import CreatedForms from "../components/dashboard/CreatedForms";
 export default function DashboardPage() {
   const { applications, duplicateApp, deleteApp } = useApplications();
   const { isSignedIn, setShowAuth, setPendingCreatePrompt } = useAuth();
-  const { setCreatePrompt, setGeneratePrompt, plan, setShowSearch } = useUIState();
+  const { setGeneratePrompt, plan, setShowSearch } = useUIState();
   const { setCurrentApp } = useCurrentApplication();
   const navigate = useNavigate();
 
   function handleCreate(prompt: string) {
+    if (!prompt.trim()) return;
     if (!isSignedIn) {
       setPendingCreatePrompt(prompt);
       setShowAuth(true);
@@ -23,8 +24,14 @@ export default function DashboardPage() {
   }
 
   function handleUseRecommendation(prompt: string) {
-    setCreatePrompt(prompt);
-    navigate("/applications/new");
+    if (!prompt.trim()) return;
+    if (!isSignedIn) {
+      setPendingCreatePrompt(prompt);
+      setShowAuth(true);
+    } else {
+      setGeneratePrompt(prompt);
+      navigate("/applications/generating");
+    }
   }
 
   function handleOpenApp(app: any) {
@@ -66,7 +73,7 @@ export default function DashboardPage() {
         <CreatedForms
           applications={applications}
           onOpenApp={handleOpenApp}
-          onCreateClick={() => navigate("/applications/new")}
+          onCreateClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
           onDuplicateApp={duplicateApp}
           onDeleteApp={deleteApp}
         />

@@ -2,7 +2,6 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import DashboardPage from "../pages/DashboardPage";
 import TemplatesPage from "../pages/TemplatesPage";
 import ApplicationsPage from "../pages/ApplicationsPage";
-import CreateApplicationPage from "../pages/CreateApplicationPage";
 import GeneratingPage from "../pages/GeneratingPage";
 import EditorPage from "../pages/EditorPage";
 import PreviewPage from "../pages/PreviewPage";
@@ -20,7 +19,7 @@ export default function AppRoutes() {
       <Route path="/" element={<DashboardPage />} />
       <Route path="/templates" element={<TemplatesPage />} />
       <Route path="/applications" element={<ApplicationsPage />} />
-      <Route path="/applications/new" element={<CreateApplicationPage />} />
+      <Route path="/applications/new" element={<Navigate to="/" replace />} />
       <Route path="/applications/generating" element={<GeneratingPage />} />
       <Route path="/applications/:id" element={<EditorPage />} />
       <Route path="/applications/:id/preview" element={<PreviewPage />} />

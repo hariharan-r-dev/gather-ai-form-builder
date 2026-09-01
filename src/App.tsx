@@ -29,7 +29,7 @@ function GlobalModals() {
     setShowDeleteConfirmModal,
     showFormSettingsModal,
     setShowFormSettingsModal,
-    setCreatePrompt,
+    setGeneratePrompt,
     toasts,
     removeToast,
   } = useUIState();
@@ -41,9 +41,9 @@ function GlobalModals() {
     setIsSignedIn(true);
     setShowAuth(false);
     if (pendingCreatePrompt !== null) {
-      setCreatePrompt(pendingCreatePrompt);
+      setGeneratePrompt(pendingCreatePrompt);
       setPendingCreatePrompt(null);
-      navigate("/applications/new");
+      navigate("/applications/generating");
     }
   }
 

@@ -40,7 +40,7 @@ export default function ApplicationsPage() {
         <CreatedForms
           applications={applications}
           onOpenApp={handleOpenApp}
-          onCreateClick={() => navigate("/applications/new")}
+          onCreateClick={() => navigate("/")}
           onDuplicateApp={duplicateApp}
           onDeleteApp={deleteApp}
         />
