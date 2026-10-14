@@ -2,25 +2,25 @@ import { useState, useEffect } from "react";
 import QRCode from "qrcode";
 import { Application } from "../../types";
 import { useUIState } from "../../app/AppProvider";
+import { getPublicFormUrl, getPublicFormDisplayUrl } from "../../utils/application";
 
 interface PublishModalProps {
   app: Application;
   onClose: () => void;
-  onPublished: () => void;
-  onUnpublished?: () => void;
+  onPublished: () => Promise<void> | void;
+  onUnpublished?: () => Promise<void> | void;
 }
 
 export default function PublishModal({ app, onClose, onPublished, onUnpublished }: PublishModalProps) {
   const { showToast } = useUIState();
   const isCurrentlyPublished = app.status === "published";
   const [published, setPublished] = useState(isCurrentlyPublished);
+  const [isPublishing, setIsPublishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
 
-  const slug = app.slug || app.id;
-  const origin = window.location.origin;
-  const fullUrl = `${origin}/form/${slug}`;
-  const displayUrl = `${window.location.host}/form/${slug}`;
+  const fullUrl = getPublicFormUrl(app);
+  const displayUrl = getPublicFormDisplayUrl(app);
 
   useEffect(() => {
     let isMounted = true;
@@ -42,7 +42,7 @@ export default function PublishModal({ app, onClose, onPublished, onUnpublished 
     };
   }, [fullUrl]);
 
-  function handlePublish() {
+  async function handlePublish() {
     const totalQuestions = (app.sections || []).reduce((acc, s) => acc + (s.questions?.length || 0), 0);
     if (!app.sections || app.sections.length === 0 || totalQuestions === 0) {
       setError("Please add at least one section with a question before publishing.");
@@ -50,18 +50,47 @@ export default function PublishModal({ app, onClose, onPublished, onUnpublished 
     }
 
     setError(null);
-    setPublished(true);
-    onPublished();
+    setIsPublishing(true);
+    try {
+      await onPublished();
+      setPublished(true);
+      showToast("Application published successfully");
+    } catch (err) {
+      console.error("Failed to publish:", err);
+      setError("Failed to publish application. Please check your connection and try again.");
+    } finally {
+      setIsPublishing(false);
+    }
   }
 
-  function handleUnpublish() {
-    setPublished(false);
-    onUnpublished?.();
+  async function handleUnpublish() {
+    setIsPublishing(true);
+    try {
+      if (onUnpublished) {
+        await onUnpublished();
+      }
+      setPublished(false);
+      showToast("Application unpublished");
+    } catch (err) {
+      console.error("Failed to unpublish:", err);
+      setError("Failed to unpublish application.");
+    } finally {
+      setIsPublishing(false);
+    }
   }
 
   async function handleCopy() {
     try {
-      await navigator.clipboard.writeText(fullUrl);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(fullUrl);
+      } else {
+        const input = document.createElement("input");
+        input.value = fullUrl;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+      }
       showToast("Copied to clipboard");
     } catch {
       showToast("Copied to clipboard");
@@ -95,11 +124,11 @@ export default function PublishModal({ app, onClose, onPublished, onUnpublished 
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[2px] p-4 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px] p-4 overflow-y-auto"
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-md my-auto p-6 relative max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150"
+        className="bg-white rounded-2xl shadow-xl w-full max-w-md my-auto p-6 relative max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150 border border-[#E2E8F0]"
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -216,10 +245,11 @@ export default function PublishModal({ app, onClose, onPublished, onUnpublished 
             <div className="flex items-center justify-between gap-2 pt-3 border-t border-[#F1F5F9]">
               <button
                 type="button"
+                disabled={isPublishing}
                 onClick={handleUnpublish}
-                className="py-2 text-xs text-[#64748B] hover:text-red-600 transition-colors cursor-pointer"
+                className="py-2 text-xs text-[#64748B] hover:text-red-600 transition-colors cursor-pointer disabled:opacity-50"
               >
-                Unpublish
+                {isPublishing ? "Updating..." : "Unpublish"}
               </button>
 
               <button
@@ -263,17 +293,28 @@ export default function PublishModal({ app, onClose, onPublished, onUnpublished 
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
+                disabled={isPublishing}
                 onClick={onClose}
-                className="px-4 py-2 text-xs font-medium text-[#64748B] border border-[#E2E8F0] rounded-xl hover:bg-[#F8FAFC] transition-colors cursor-pointer"
+                className="px-4 py-2 text-xs font-medium text-[#64748B] border border-[#E2E8F0] rounded-xl hover:bg-[#F8FAFC] transition-colors cursor-pointer disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
+                disabled={isPublishing}
                 onClick={handlePublish}
-                className="px-5 py-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-medium rounded-xl transition-colors cursor-pointer shadow-sm"
+                className="px-5 py-2 bg-[#2563EB] hover:bg-[#1D4ED8] disabled:bg-[#93C5FD] text-white text-xs font-medium rounded-xl transition-colors cursor-pointer shadow-sm flex items-center gap-2"
               >
-                Publish now
+                {isPublishing ? (
+                  <>
+                    <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="12" />
+                    </svg>
+                    <span>Publishing...</span>
+                  </>
+                ) : (
+                  <span>Publish now</span>
+                )}
               </button>
             </div>
           </div>

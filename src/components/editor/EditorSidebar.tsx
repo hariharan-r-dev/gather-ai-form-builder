@@ -4,14 +4,6 @@ import { useUIState } from "../../app/AppProvider";
 import FeedbackModal from "../modals/FeedbackModal";
 import UndoConfirmModal from "../modals/UndoConfirmModal";
 
-const AI_SUGGESTIONS = [
-  "Add a portfolio question",
-  "Make these questions shorter",
-  "Add a leadership question",
-  "Make this suitable for students",
-  "Improve these questions",
-];
-
 interface EditorSidebarProps {
   sidebarWidth: number;
   aiInput: string;
@@ -75,6 +67,7 @@ export default function EditorSidebar({
       className="flex-shrink-0 bg-white flex flex-col h-full border-r border-[#E2E8F0] relative"
       style={{ width: sidebarWidth }}
     >
+      {/* Header */}
       <div className="p-4 border-b border-[#E2E8F0] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2">
@@ -92,8 +85,8 @@ export default function EditorSidebar({
         )}
       </div>
 
+      {/* Conversation History */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
-        {/* Chat / interaction messages */}
         {aiMessages.map((msg) => {
           const isUser = msg.role === "user";
           const canUndo = Boolean(msg.mutation && msg.previousFormState && !msg.undone);
@@ -218,24 +211,6 @@ export default function EditorSidebar({
             <span>Updating application...</span>
           </div>
         )}
-
-        {/* Suggestion list */}
-        <div className="pt-2 border-t border-[#F1F5F9] space-y-1.5">
-          <p className="text-[11px] font-medium text-[#94A3B8]">Suggested edits:</p>
-          <div className="space-y-1">
-            {AI_SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                type="button"
-                disabled={isLoading}
-                onClick={() => handleSend(s)}
-                className="w-full text-left px-3 py-2 text-xs text-[#64748B] hover:text-[#2563EB] bg-[#F8FAFC] hover:bg-[#EFF6FF] border border-[#E2E8F0] hover:border-[#2563EB]/30 rounded-lg transition-colors leading-snug cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
 
       {/* Input composer */}

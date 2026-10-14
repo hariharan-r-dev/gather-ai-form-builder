@@ -25,17 +25,17 @@ export default function TemplatesPage() {
         activeNav="templates"
         onNavChange={(nav) => {
           if (nav === "applications") {
-            navigate("/");
+            navigate("/app/applications");
           }
         }}
-        onLogoClick={() => navigate("/")}
+        onLogoClick={() => navigate("/app")}
         onSignIn={() => setShowAuth(true)}
         isSignedIn={isSignedIn}
-        onBackToApps={() => navigate("/")}
+        onBackToApps={() => navigate("/app/applications")}
         plan={plan}
-        onBilling={() => navigate("/pricing")}
-        onUpgrade={() => navigate("/pricing")}
-        onSettings={() => navigate("/settings")}
+        onBilling={() => navigate("/app/pricing", { state: { from: "/app/templates" } })}
+        onUpgrade={() => navigate("/app/pricing", { state: { from: "/app/templates" } })}
+        onSettings={() => navigate("/app/settings", { state: { from: "/app/templates" } })}
         onSearchClick={() => setShowSearch(true)}
       />
       <main className="flex-1 flex flex-col overflow-hidden">

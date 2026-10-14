@@ -52,10 +52,13 @@ export const EditApplicationResponseSchema = z.object({
 });
 
 export const IntentSchema = z.enum([
+  "FORM_CREATE",
   "FORM_EDIT",
+  "FORM_INFO",
+  "GENERAL",
+  "AMBIGUOUS",
   "FORM_RELATED_CHAT",
   "OUT_OF_SCOPE",
-  "AMBIGUOUS",
 ]);
 
 export const IntentDetectionResponseSchema = z.object({

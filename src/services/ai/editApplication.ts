@@ -242,12 +242,15 @@ User Instruction: "${instruction}"
       id: sectionId,
       title: sec.title.trim(),
       questions: sec.questions.map((q: any, qIdx: number) => {
-        const questionId = q.id && existingQuestionMap.has(q.id) ? q.id : q.id || `q-${Date.now()}-${sIdx}-${qIdx}`;
+        const isExisting = q.id && existingQuestionMap.has(q.id);
+        const questionId = isExisting ? q.id : q.id || `q-${Date.now()}-${sIdx}-${qIdx}`;
+        const defaultReq = currentApp.settings?.defaultQuestionRequired !== false;
+        const required = q.required !== undefined ? !!q.required : isExisting ? existingQuestionMap.get(q.id)?.required ?? true : defaultReq;
         return {
           id: questionId,
           label: q.label.trim(),
           type: normalizeQuestionType(q.type),
-          required: !!q.required,
+          required,
           placeholder: q.placeholder?.trim() || "",
           options: q.options && q.options.length > 0 ? q.options : undefined,
           hasOther: q.hasOther !== undefined ? !!q.hasOther : undefined,

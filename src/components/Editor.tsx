@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Application, Question, Section, AskGatherMessage } from "../types";
 import { processAskGatherMessage } from "../services/ai/askGather";
 import { buildCreationSummary } from "../utils/creationSummary";
+import { isValidFormCreationPrompt, isAmbiguousText } from "../services/ai/intentValidation";
 import EditorLayout from "./editor/EditorLayout";
 import EditorSidebar from "./editor/EditorSidebar";
 import QuestionEditor from "./editor/QuestionEditor";
@@ -20,17 +21,27 @@ function getInitialMessages(app: Application): AskGatherMessage[] {
     return app.askGatherHistory;
   }
   if (app.creationPrompt && app.creationPrompt.trim().length > 0) {
+    const prompt = app.creationPrompt.trim();
+    let assistantMsg = "";
+    if (isValidFormCreationPrompt(prompt)) {
+      assistantMsg = buildCreationSummary(app.name, app.sections);
+    } else if (isAmbiguousText(prompt)) {
+      assistantMsg = "Sure — what would you like to improve? I can help with question wording, structure, sections, required fields, or answer types.";
+    } else {
+      assistantMsg = "It seems like your message isn't related to building or editing your form. I'm here to help you create and edit your form — for example, adding or removing questions, changing question types, editing sections, or improving your questions.\n\nWhat would you like to change?";
+    }
+
     return [
       {
         id: `msg-init-user-${app.id}`,
         role: "user",
-        content: app.creationPrompt,
+        content: prompt,
         createdAt: new Date().toISOString(),
       },
       {
         id: `msg-init-assistant-${app.id}`,
         role: "assistant",
-        content: buildCreationSummary(app.name, app.sections),
+        content: assistantMsg,
         createdAt: new Date().toISOString(),
         feedback: null,
         mutation: false,
@@ -117,8 +128,15 @@ export default function Editor({ app, onUpdateApp }: EditorProps) {
   }
 
   function addQuestion(sectionId: string, type: string) {
+    const isRequiredByDefault = app.settings?.defaultQuestionRequired !== false;
     const label = type === "short_answer" ? "New question" : `${type.replace("_", " ")} question`;
-    const newQ: Question = { id: `q-${Date.now()}`, label, type, required: false, options: defaultOptions(type) };
+    const newQ: Question = {
+      id: `q-${Date.now()}`,
+      label,
+      type,
+      required: isRequiredByDefault,
+      options: defaultOptions(type),
+    };
     const updated = app.sections.map((s) =>
       s.id === sectionId ? { ...s, questions: [...s.questions, newQ] } : s
     );
@@ -244,7 +262,7 @@ export default function Editor({ app, onUpdateApp }: EditorProps) {
     try {
       const result = await processAskGatherMessage(app, text, currentHistory);
 
-      const isMutation = Boolean(result.type === "edit" && result.updatedApp);
+      const isMutation = Boolean((result.type === "edit" || result.type === "create") && result.updatedApp);
       const previousFormState = isMutation
         ? {
             name: app.name,

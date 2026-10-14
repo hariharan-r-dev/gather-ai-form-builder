@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useApplications, useAuth, useUIState, useCurrentApplication } from "../app/AppProvider";
 import Header from "../components/Header";
@@ -12,6 +13,11 @@ export default function DashboardPage() {
   const { setCurrentApp } = useCurrentApplication();
   const navigate = useNavigate();
 
+  // Show recently created forms, sorted newest first
+  const recentApplications = useMemo(() => {
+    return [...applications].reverse();
+  }, [applications]);
+
   function handleCreate(prompt: string) {
     if (!prompt.trim()) return;
     if (!isSignedIn) {
@@ -19,7 +25,7 @@ export default function DashboardPage() {
       setShowAuth(true);
     } else {
       setGeneratePrompt(prompt);
-      navigate("/applications/generating");
+      navigate("/app/applications/generating");
     }
   }
 
@@ -30,13 +36,13 @@ export default function DashboardPage() {
       setShowAuth(true);
     } else {
       setGeneratePrompt(prompt);
-      navigate("/applications/generating");
+      navigate("/app/applications/generating");
     }
   }
 
   function handleOpenApp(app: any) {
     setCurrentApp(app);
-    navigate(`/applications/${app.id}`);
+    navigate(`/app/applications/${app.id}`);
   }
 
   return (
@@ -46,17 +52,17 @@ export default function DashboardPage() {
         activeNav="applications"
         onNavChange={(nav) => {
           if (nav === "templates") {
-            navigate("/templates");
+            navigate("/app/templates");
           }
         }}
-        onLogoClick={() => navigate("/")}
+        onLogoClick={() => navigate("/app")}
         onSignIn={() => setShowAuth(true)}
         isSignedIn={isSignedIn}
-        onBackToApps={() => navigate("/")}
+        onBackToApps={() => navigate("/app/applications")}
         plan={plan}
-        onBilling={() => navigate("/pricing")}
-        onUpgrade={() => navigate("/pricing")}
-        onSettings={() => navigate("/settings")}
+        onBilling={() => navigate("/app/pricing", { state: { from: "/app" } })}
+        onUpgrade={() => navigate("/app/pricing", { state: { from: "/app" } })}
+        onSettings={() => navigate("/app/settings", { state: { from: "/app" } })}
         onSearchClick={() => setShowSearch(true)}
       />
 
@@ -69,9 +75,11 @@ export default function DashboardPage() {
           <PromptRecommendations onUseRecommendation={handleUseRecommendation} />
         )}
 
-        {/* Created Forms */}
+        {/* Recently created forms */}
         <CreatedForms
-          applications={applications}
+          title="Recently created"
+          showControls={false}
+          applications={recentApplications}
           onOpenApp={handleOpenApp}
           onCreateClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
           onDuplicateApp={duplicateApp}

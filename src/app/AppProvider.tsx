@@ -1,8 +1,15 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, ReactNode, useRef } from "react";
 import { Application, Submission, Plan, Section } from "../types";
 import { UpgradeModalTrigger } from "../components/UpgradeModal";
-import { applicationService } from "../services/applications/applicationService";
+import { applicationService, resolveOrganizationAndUser } from "../services/applications";
 import { ToastItem } from "../components/common/Snackbar";
+import { supabase } from "../lib/supabase";
+
+export interface UserProfile {
+  name: string;
+  email: string;
+  org: string;
+}
 
 // --- Auth Context ---
 interface AuthContextType {
@@ -12,6 +19,8 @@ interface AuthContextType {
   setShowAuth: (val: boolean) => void;
   pendingCreatePrompt: string | null;
   setPendingCreatePrompt: (val: string | null) => void;
+  user: UserProfile;
+  setUser: (user: UserProfile) => void;
 }
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -22,6 +31,8 @@ interface ApplicationsContextType {
   refreshApplications: () => Promise<void>;
   createApp: (name: string, description?: string, sections?: Section[], creationPrompt?: string) => Promise<Application>;
   updateApp: (app: Application) => Promise<Application>;
+  publishApp: (id: string) => Promise<Application>;
+  unpublishApp: (id: string) => Promise<Application>;
   deleteApp: (id: string) => Promise<void>;
   duplicateApp: (app: Application) => Promise<Application>;
 }
@@ -80,6 +91,9 @@ interface UIStateContextType {
   toasts: ToastItem[];
   showToast: (msg: string) => void;
   removeToast: (id: string) => void;
+  isSidebarOpen: boolean;
+  setIsSidebarOpen: (open: boolean) => void;
+  toggleSidebar: () => void;
 }
 const UIStateContext = createContext<UIStateContextType | undefined>(undefined);
 
@@ -88,6 +102,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isSignedIn, setIsSignedIn] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [pendingCreatePrompt, setPendingCreatePrompt] = useState<string | null>(null);
+  const [user, setUser] = useState<UserProfile>({
+    name: "Hariharan R",
+    email: "hariharan.creates@gmail.com",
+    org: "Hariharan R's organization",
+  });
 
   // Applications state
   const [applications, setApplications] = useState<Application[]>([]);
@@ -99,7 +118,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Plan state
   const [plan, setPlan] = useState<Plan>("free");
-  const [submissionUsage, setSubmissionUsage] = useState(4);
+  const [submissionUsage, setSubmissionUsage] = useState(0);
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
   // UI / Modal state
@@ -118,6 +137,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [formSettingsAllowSubmissions, setFormSettingsAllowSubmissions] = useState(true);
   const [formSettingsConfirmMsg, setFormSettingsConfirmMsg] = useState("Thank you for your submission! We'll be in touch soon.");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // Debounce & Request ordering for autosave
+  const saveTimeoutRef = useRef<any>(null);
+  const lastSavePromiseRef = useRef<Promise<any>>(Promise.resolve());
+
+  function toggleSidebar() {
+    setIsSidebarOpen((prev) => !prev);
+  }
 
   function showToast(msg: string) {
     const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
@@ -128,47 +156,187 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }
 
-  // Fetch applications on mount
+  // Fetch applications directly from Supabase
   const refreshApplications = async () => {
     try {
       const data = await applicationService.getApplications();
       setApplications(data);
+    } catch (err: any) {
+      console.error("[Gather AppProvider] Error refreshing applications:", err);
+      showToast("Couldn't load applications. Please check your connection.");
     } finally {
       setLoading(false);
     }
   };
 
+  // Synchronize Supabase Auth Session
   useEffect(() => {
-    refreshApplications();
+    let isMounted = true;
+
+    async function initAuth() {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+
+        if (session?.user) {
+          if (isMounted) {
+            setIsSignedIn(true);
+            const userEmail = session.user.email || "hariharan.creates@gmail.com";
+            const userName = session.user.user_metadata?.name || session.user.user_metadata?.full_name || "Hariharan R";
+            setUser({
+              name: userName,
+              email: userEmail,
+              org: `${userName}'s organization`,
+            });
+            await refreshApplications();
+          }
+        } else {
+          if (isMounted) {
+            setIsSignedIn(false);
+            setApplications([]);
+            setLoading(false);
+          }
+        }
+      } catch (err) {
+        console.warn("[Gather Auth] Error during auth initialization:", err);
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    }
+
+    initAuth();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        setIsSignedIn(true);
+        const userEmail = session.user.email || "user@gather.app";
+        const userName = session.user.user_metadata?.name || session.user.user_metadata?.full_name || "Gather User";
+        setUser({
+          name: userName,
+          email: userEmail,
+          org: `${userName}'s organization`,
+        });
+        await refreshApplications();
+      } else if (event === "SIGNED_OUT") {
+        setIsSignedIn(false);
+        setApplications([]);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      authListener?.subscription?.unsubscribe();
+    };
   }, []);
 
-  const createApp = async (name: string, description?: string, sections?: Section[], creationPrompt?: string) => {
-    const newApp = await applicationService.createApplication(name, description, sections, creationPrompt);
-    setApplications((prev) => [newApp, ...prev]);
-    return newApp;
+  const createApp = async (
+    name: string,
+    description?: string,
+    sections?: Section[],
+    creationPrompt?: string,
+    initialHistory?: any
+  ) => {
+    try {
+      const newApp = await applicationService.createApplication(
+        name,
+        description,
+        sections,
+        creationPrompt,
+        initialHistory
+      );
+      setApplications((prev) => [newApp, ...prev.filter((a) => a.id !== newApp.id)]);
+      return newApp;
+    } catch (err: any) {
+      console.error("[Gather AppProvider] Error creating application:", err);
+      showToast("Couldn't create the application.");
+      throw err;
+    }
   };
 
   const updateApp = async (app: Application) => {
-    const updated = await applicationService.updateApplication(app);
-    setApplications((prev) => prev.map((a) => (a.id === app.id ? updated : a)));
+    // Update local state immediately for responsive UI
+    setApplications((prev) => prev.map((a) => (a.id === app.id ? app : a)));
     if (currentApp && currentApp.id === app.id) {
-      setCurrentApp(updated);
+      setCurrentApp(app);
     }
-    return updated;
+
+    // Debounced queue update to Supabase to prevent race conditions and network churn
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    return new Promise<Application>((resolve, reject) => {
+      saveTimeoutRef.current = setTimeout(async () => {
+        try {
+          lastSavePromiseRef.current = lastSavePromiseRef.current.then(() =>
+            applicationService.updateApplication(app)
+          );
+          const savedApp = await lastSavePromiseRef.current;
+          resolve(savedApp);
+        } catch (err) {
+          console.error("[Gather AppProvider] Error saving application updates:", err);
+          showToast("Couldn't save your changes. Please try again.");
+          reject(err);
+        }
+      }, 400);
+    });
+  };
+
+  const publishApp = async (id: string) => {
+    try {
+      const updated = await applicationService.publishApplication(id);
+      setApplications((prev) => prev.map((a) => (a.id === id ? updated : a)));
+      if (currentApp && currentApp.id === id) {
+        setCurrentApp(updated);
+      }
+      return updated;
+    } catch (err: any) {
+      console.error("[Gather AppProvider] Error publishing application:", err);
+      showToast("Couldn't publish the application.");
+      throw err;
+    }
+  };
+
+  const unpublishApp = async (id: string) => {
+    try {
+      const updated = await applicationService.unpublishApplication(id);
+      setApplications((prev) => prev.map((a) => (a.id === id ? updated : a)));
+      if (currentApp && currentApp.id === id) {
+        setCurrentApp(updated);
+      }
+      return updated;
+    } catch (err: any) {
+      console.error("[Gather AppProvider] Error unpublishing application:", err);
+      showToast("Couldn't unpublish the application.");
+      throw err;
+    }
   };
 
   const deleteApp = async (id: string) => {
-    await applicationService.deleteApplication(id);
-    setApplications((prev) => prev.filter((a) => a.id !== id));
-    if (currentApp && currentApp.id === id) {
-      setCurrentApp(null);
+    try {
+      await applicationService.deleteApplication(id);
+      setApplications((prev) => prev.filter((a) => a.id !== id));
+      if (currentApp && currentApp.id === id) {
+        setCurrentApp(null);
+      }
+    } catch (err: any) {
+      console.error("[Gather AppProvider] Error deleting application:", err);
+      showToast("Couldn't delete the application.");
+      throw err;
     }
   };
 
   const duplicateApp = async (app: Application) => {
-    const dup = await applicationService.duplicateApplication(app);
-    setApplications((prev) => [dup, ...prev]);
-    return dup;
+    try {
+      const dup = await applicationService.duplicateApplication(app);
+      setApplications((prev) => [dup, ...prev]);
+      return dup;
+    } catch (err: any) {
+      console.error("[Gather AppProvider] Error duplicating application:", err);
+      showToast("Couldn't duplicate the application.");
+      throw err;
+    }
   };
 
   return (
@@ -180,6 +348,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setShowAuth,
         pendingCreatePrompt,
         setPendingCreatePrompt,
+        user,
+        setUser,
       }}
     >
       <ApplicationsContext.Provider
@@ -189,6 +359,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           refreshApplications,
           createApp,
           updateApp,
+          publishApp,
+          unpublishApp,
           deleteApp,
           duplicateApp,
         }}
@@ -244,6 +416,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 toasts,
                 showToast,
                 removeToast,
+                isSidebarOpen,
+                setIsSidebarOpen,
+                toggleSidebar,
               }}
             >
               {children}

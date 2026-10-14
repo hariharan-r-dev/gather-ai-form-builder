@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import { Application, Question } from "../types";
+import { Application, Question, Section } from "../types";
+import { stripHtml } from "../utils/application";
+import FileUploadField, { parseFileAnswer } from "./common/FileUploadField";
 
 interface PreviewProps {
   app: Application;
@@ -128,13 +130,11 @@ function QuestionField({
 
   if (normType === "file" || normType === "fileupload" || normType === "upload") {
     return (
-      <div className={`border-2 border-dashed rounded-xl p-6 text-center hover:border-[#2563EB]/40 transition-colors cursor-pointer bg-[#F8FAFC]/50 ${hasError ? "border-red-400" : "border-[#E2E8F0]"}`}>
-        <svg className="w-6 h-6 text-[#94A3B8] mx-auto mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
-        </svg>
-        <p className="text-xs text-[#64748B]">Click to upload or drag and drop</p>
-        <p className="text-[10px] text-[#94A3B8] mt-1">PDF, DOC, DOCX up to 10MB</p>
-      </div>
+      <FileUploadField
+        value={value}
+        onChange={onChange}
+        hasError={hasError}
+      />
     );
   }
 
@@ -219,22 +219,68 @@ export default function Preview({ app, onBack, onUpgrade }: PreviewProps) {
     }
   }
 
-  function handleNextSection() {
-    if (!activeSection) return;
+  function validateSectionQuestions(section: Section): Record<string, string> {
+    const sectionErrors: Record<string, string> = {};
 
-    // Validate required fields in the current section
-    const newErrors: Record<string, string> = {};
-    for (const q of activeSection.questions) {
+    for (const q of section.questions) {
+      const val = (formValues[q.id] || "").trim();
+      const normType = (q.type || "").toLowerCase().replace(/[\s_-]+/g, "");
+
       if (q.required) {
-        const val = formValues[q.id];
-        if (!val || (typeof val === "string" && !val.trim())) {
-          newErrors[q.id] = "This question is required";
+        if (!val) {
+          sectionErrors[q.id] = "This question is required";
+          continue;
+        }
+
+        if (normType === "file" || normType === "fileupload" || normType === "upload") {
+          const parsed = parseFileAnswer(val);
+          if (!parsed || !parsed.fileName) {
+            sectionErrors[q.id] = "This question is required";
+            continue;
+          }
+        }
+
+        if (normType === "multiplechoice" || normType === "checkboxes") {
+          const selected = val.split(", ").filter(Boolean);
+          if (selected.length === 0) {
+            sectionErrors[q.id] = "This question is required";
+            continue;
+          }
+        }
+      }
+
+      if (val) {
+        if (normType === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) {
+          sectionErrors[q.id] = "Please enter a valid email address";
+        } else if (normType === "url" && !/^https?:\/\/.+/i.test(val)) {
+          sectionErrors[q.id] = "Please enter a valid URL (starting with http:// or https://)";
         }
       }
     }
 
-    if (Object.keys(newErrors).length > 0) {
-      setErrors(newErrors);
+    return sectionErrors;
+  }
+
+  function scrollToFirstError(errorIds: string[]) {
+    if (errorIds.length === 0) return;
+    const firstId = errorIds[0];
+    setTimeout(() => {
+      const element = document.getElementById(`preview-question-field-${firstId}`);
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+        const input = element.querySelector("input, textarea, select") as HTMLElement | null;
+        input?.focus?.();
+      }
+    }, 50);
+  }
+
+  function handleNextSection() {
+    if (!activeSection) return;
+    const sectionErrors = validateSectionQuestions(activeSection);
+
+    if (Object.keys(sectionErrors).length > 0) {
+      setErrors((prev) => ({ ...prev, ...sectionErrors }));
+      scrollToFirstError(Object.keys(sectionErrors));
       return;
     }
 
@@ -260,21 +306,26 @@ export default function Preview({ app, onBack, onUpgrade }: PreviewProps) {
   }
 
   function handleSubmit() {
-    if (!activeSection) return;
+    // Validate entire form across all sections
+    let firstInvalidSectionIndex = -1;
+    let accumulatedErrors: Record<string, string> = {};
 
-    // Validate required fields in current section
-    const newErrors: Record<string, string> = {};
-    for (const q of activeSection.questions) {
-      if (q.required) {
-        const val = formValues[q.id];
-        if (!val || (typeof val === "string" && !val.trim())) {
-          newErrors[q.id] = "This question is required";
+    for (let i = 0; i < sections.length; i++) {
+      const sErrors = validateSectionQuestions(sections[i]);
+      if (Object.keys(sErrors).length > 0) {
+        if (firstInvalidSectionIndex === -1) {
+          firstInvalidSectionIndex = i;
         }
+        accumulatedErrors = { ...accumulatedErrors, ...sErrors };
       }
     }
 
-    if (Object.keys(newErrors).length > 0) {
-      setErrors(newErrors);
+    if (Object.keys(accumulatedErrors).length > 0) {
+      setErrors(accumulatedErrors);
+      if (firstInvalidSectionIndex !== -1 && firstInvalidSectionIndex !== currentIndex) {
+        setActiveSectionId(sections[firstInvalidSectionIndex].id);
+      }
+      scrollToFirstError(Object.keys(accumulatedErrors));
       return;
     }
 
@@ -404,7 +455,10 @@ export default function Preview({ app, onBack, onUpgrade }: PreviewProps) {
           {/* Form Header */}
           <div className="px-8 pt-8 pb-5 border-b border-[#E2E8F0]">
             <div className="flex items-center justify-between gap-4 mb-2">
-              <h1 className="text-2xl font-semibold text-[#0F172A] leading-tight">{app.name}</h1>
+              <h1
+                className="text-2xl font-semibold text-[#0F172A] leading-tight"
+                dangerouslySetInnerHTML={{ __html: app.name || "Application" }}
+              />
               {sections.length > 1 && (
                 <span className="text-xs font-medium px-2.5 py-1 bg-[#F1F5F9] text-[#64748B] rounded-lg flex-shrink-0">
                   Section {currentIndex + 1} of {sections.length}
@@ -412,7 +466,10 @@ export default function Preview({ app, onBack, onUpgrade }: PreviewProps) {
               )}
             </div>
             {app.description && (
-              <p className="text-sm text-[#64748B] leading-relaxed">{app.description}</p>
+              <div
+                className="text-sm text-[#64748B] leading-relaxed"
+                dangerouslySetInnerHTML={{ __html: app.description }}
+              />
             )}
           </div>
 
@@ -459,7 +516,7 @@ export default function Preview({ app, onBack, onUpgrade }: PreviewProps) {
                     {activeSection.questions.map((q) => {
                       const hasError = Boolean(errors[q.id]);
                       return (
-                        <div key={q.id} className="space-y-1.5">
+                        <div key={q.id} id={`preview-question-field-${q.id}`} className="space-y-1.5 scroll-mt-6">
                           <label className="block text-sm font-medium text-[#0F172A]">
                             {q.label}
                             {q.required && <span className="text-red-500 ml-1 font-bold">*</span>}

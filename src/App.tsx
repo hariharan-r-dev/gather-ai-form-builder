@@ -1,6 +1,6 @@
-import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
-import { AppProvider, useAuth, useUIState, usePlan, useCurrentApplication, useApplications } from "./app/AppProvider";
-import FreeBanner from "./components/FreeBanner";
+import { useEffect } from "react";
+import { BrowserRouter as Router, useLocation, useNavigate } from "react-router-dom";
+import { AppProvider, useAuth, useUIState, useCurrentApplication, useApplications } from "./app/AppProvider";
 
 import AppRoutes from "./app/routes";
 
@@ -13,6 +13,18 @@ import DraftSavedModal from "./components/modals/DraftSavedModal";
 import DeleteConfirmModal from "./components/modals/DeleteConfirmModal";
 import FormSettingsModal from "./components/modals/FormSettingsModal";
 import Snackbar from "./components/common/Snackbar";
+
+function ScrollToTop() {
+  const { pathname, hash } = useLocation();
+
+  useEffect(() => {
+    if (!hash) {
+      window.scrollTo(0, 0);
+    }
+  }, [pathname, hash]);
+
+  return null;
+}
 
 function GlobalModals() {
   const { showAuth, setShowAuth, pendingCreatePrompt, setPendingCreatePrompt, setIsSignedIn } = useAuth();
@@ -34,7 +46,6 @@ function GlobalModals() {
     removeToast,
   } = useUIState();
   const { currentApp, setCurrentApp } = useCurrentApplication();
-  const { applications, updateApp, deleteApp } = useApplications();
   const navigate = useNavigate();
 
   function handleAuthSuccess() {
@@ -43,23 +54,27 @@ function GlobalModals() {
     if (pendingCreatePrompt !== null) {
       setGeneratePrompt(pendingCreatePrompt);
       setPendingCreatePrompt(null);
-      navigate("/applications/generating");
+      navigate("/app/applications/generating");
     }
   }
 
-  function handlePublished() {
+  const { applications, updateApp, publishApp, unpublishApp, deleteApp } = useApplications();
+
+  async function handlePublished() {
     if (!currentApp) return;
-    updateApp({ ...currentApp, status: "published" });
+    await publishApp(currentApp.id);
   }
 
-  function handleUnpublished() {
+  async function handleUnpublished() {
     if (!currentApp) return;
-    updateApp({ ...currentApp, status: "draft" });
+    await unpublishApp(currentApp.id);
   }
 
-  function handleSettingsSave(name: string, description: string) {
+  function handleSettingsSave(updates: Partial<Application>) {
     if (!currentApp) return;
-    updateApp({ ...currentApp, name, description });
+    const updated = { ...currentApp, ...updates };
+    updateApp(updated);
+    setCurrentApp(updated);
     setShowFormSettingsModal(false);
   }
 
@@ -70,6 +85,10 @@ function GlobalModals() {
     setShowDeleteConfirmModal(false);
     navigate("/applications");
   }
+
+  const activePublishApp = currentApp
+    ? applications.find((a) => a.id === currentApp.id) || currentApp
+    : null;
 
   return (
     <>
@@ -94,9 +113,9 @@ function GlobalModals() {
         />
       )}
 
-      {showPublish && currentApp && (
+      {showPublish && activePublishApp && (
         <PublishModal
-          app={currentApp}
+          app={activePublishApp}
           onClose={() => setShowPublish(false)}
           onPublished={handlePublished}
           onUnpublished={handleUnpublished}
@@ -143,31 +162,36 @@ function GlobalModals() {
 }
 
 function MainLayout() {
-  const { plan, submissionUsage, bannerDismissed, setBannerDismissed } = usePlan();
   const location = useLocation();
-  const navigate = useNavigate();
+  const isPublicForm = location.pathname.startsWith("/form/") || location.pathname.startsWith("/apply/");
+  const isMarketing =
+    location.pathname === "/" ||
+    location.pathname.startsWith("/blog") ||
+    location.pathname.startsWith("/whats-new") ||
+    location.pathname === "/terms" ||
+    location.pathname === "/legal" ||
+    location.pathname === "/privacy" ||
+    location.pathname === "/login" ||
+    location.pathname === "/signup";
 
-  const isPublicForm = location.pathname.startsWith("/form/");
-
-  const showBanner =
-    plan === "free" &&
-    !bannerDismissed &&
-    (location.pathname === "/applications" || location.pathname === "/applications/new");
+  if (isPublicForm || isMarketing) {
+    return (
+      <div className="flex flex-col min-h-screen bg-[#F8FAFC]">
+        <main className="flex-1 flex flex-col min-h-0">
+          <AppRoutes />
+        </main>
+        <GlobalModals />
+      </div>
+    );
+  }
 
   return (
-    <div className={`flex flex-col ${isPublicForm ? "min-h-screen" : "h-full"} bg-[#F8FAFC]`}>
-      {showBanner && (
-        <FreeBanner
-          usageCount={submissionUsage}
-          limit={10}
-          onUpgrade={() => navigate("/pricing")}
-          onDismiss={() => setBannerDismissed(true)}
-        />
-      )}
-
-      <main className={`flex-1 flex flex-col ${isPublicForm ? "overflow-y-auto min-h-0" : "overflow-hidden"}`}>
-        <AppRoutes />
-      </main>
+    <div className="flex flex-col h-full bg-[#F8FAFC] overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+        <main className="flex-1 flex flex-col overflow-hidden">
+          <AppRoutes />
+        </main>
+      </div>
 
       <GlobalModals />
     </div>
@@ -178,6 +202,7 @@ export default function App() {
   return (
     <AppProvider>
       <Router>
+        <ScrollToTop />
         <MainLayout />
       </Router>
     </AppProvider>

@@ -1,7 +1,10 @@
 import { useState, useRef } from "react";
-import { Application, Question, SubmissionAnswer } from "../types";
+import { Application, Question, Section, SubmissionAnswer } from "../types";
 import { submissionService } from "../services/submissions/submissionService";
 import { applicationService } from "../services/applications/applicationService";
+import { isFormClosed, stripHtml } from "../utils/application";
+import FileUploadField, { parseFileAnswer } from "./common/FileUploadField";
+import { fileStorage } from "../services/storage/fileStorage";
 
 interface PublicFormProps {
   app: Application;
@@ -13,12 +16,14 @@ function QuestionField({
   onChange,
   hasError,
   disabled,
+  onUploadStateChange,
 }: {
   q: Question;
   value: string;
   onChange: (val: string) => void;
   hasError?: boolean;
   disabled?: boolean;
+  onUploadStateChange?: (isUploading: boolean) => void;
 }) {
   const normType = (q.type || "").toLowerCase().replace(/[\s_-]+/g, "");
 
@@ -133,13 +138,13 @@ function QuestionField({
 
   if (normType === "file" || normType === "fileupload" || normType === "upload") {
     return (
-      <div className={`border-2 border-dashed rounded-xl p-6 text-center hover:border-[#2563EB]/40 transition-colors cursor-pointer bg-[#F8FAFC]/50 ${hasError ? "border-red-400" : "border-[#E2E8F0]"}`}>
-        <svg className="w-6 h-6 text-[#94A3B8] mx-auto mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
-        </svg>
-        <p className="text-xs text-[#64748B]">Click to upload or drag and drop</p>
-        <p className="text-[10px] text-[#94A3B8] mt-1">PDF, DOC, DOCX up to 10MB</p>
-      </div>
+      <FileUploadField
+        value={value}
+        onChange={onChange}
+        hasError={hasError}
+        disabled={disabled}
+        onUploadStateChange={onUploadStateChange}
+      />
     );
   }
 
@@ -169,8 +174,8 @@ function QuestionField({
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      placeholder={defaultPlaceholder}
       className={baseInputClass}
+      placeholder={defaultPlaceholder}
     />
   );
 }
@@ -179,68 +184,162 @@ export default function PublicForm({ app }: PublicFormProps) {
   const [activeSectionIndex, setActiveSectionIndex] = useState(0);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [uploadingFields, setUploadingFields] = useState<Record<string, boolean>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submissionId, setSubmissionId] = useState<string | null>(null);
+  const [isUpdatedResponse, setIsUpdatedResponse] = useState(false);
+  const [isDynamicallyClosed, setIsDynamicallyClosed] = useState(false);
+  const [idempotencyKey, setIdempotencyKey] = useState<string>(() => {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      return `idemp-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    }
+  });
+
   const formTopRef = useRef<HTMLDivElement>(null);
 
-  const sections = app.sections && app.sections.length > 0 ? app.sections : [];
-  const activeSection = sections[activeSectionIndex] || sections[0];
+  const sections = app.sections || [];
+  const activeSection = sections[activeSectionIndex] || null;
   const isFirstSection = activeSectionIndex === 0;
   const isLastSection = activeSectionIndex === sections.length - 1;
 
-  function handleFieldValueChange(qId: string, val: string) {
-    setFormValues((prev) => ({ ...prev, [qId]: val }));
-    if (errors[qId]) {
+  const isAnyFileUploading = Object.values(uploadingFields).some(Boolean);
+
+  // Check form closed
+  const closed = isDynamicallyClosed || isFormClosed(app);
+  const allowEditing = Boolean(app.settings?.allowResponseEditing);
+
+  if (closed && !submitted) {
+    return (
+      <div className="w-full min-h-full py-16 flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-12 h-12 bg-[#F1F5F9] rounded-2xl flex items-center justify-center mx-auto mb-4 text-[#64748B]">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+          </svg>
+        </div>
+        <h1 className="text-xl font-semibold text-[#0F172A] mb-2">{stripHtml(app.name)}</h1>
+        <p className="text-sm font-semibold text-[#0F172A] mb-1">This form is no longer accepting responses.</p>
+        <p className="text-xs text-[#64748B] max-w-sm mb-6 leading-relaxed">
+          The form has reached its configured closing date or submission limit. Please contact the form creator if you believe this is an error.
+        </p>
+      </div>
+    );
+  }
+
+  function handleFieldValueChange(questionId: string, value: string) {
+    setFormValues((prev) => ({ ...prev, [questionId]: value }));
+    if (errors[questionId]) {
       setErrors((prev) => {
         const next = { ...prev };
-        delete next[qId];
+        delete next[questionId];
         return next;
       });
     }
   }
 
-  function validateCurrentSection(): boolean {
-    if (!activeSection) return true;
-    const newErrors: Record<string, string> = {};
-    for (const q of activeSection.questions) {
+  function validateSectionQuestions(section: Section): Record<string, string> {
+    const sectionErrors: Record<string, string> = {};
+
+    for (const q of section.questions) {
+      const val = (formValues[q.id] || "").trim();
+      const normType = (q.type || "").toLowerCase().replace(/[\s_-]+/g, "");
+
       if (q.required) {
-        const val = formValues[q.id];
-        if (!val || (typeof val === "string" && !val.trim())) {
-          newErrors[q.id] = "This question is required";
+        if (!val) {
+          sectionErrors[q.id] = "This question is required";
+          continue;
+        }
+
+        if (normType === "file" || normType === "fileupload" || normType === "upload") {
+          const parsed = parseFileAnswer(val);
+          if (!parsed || !parsed.fileName) {
+            sectionErrors[q.id] = "This question is required";
+            continue;
+          }
+        }
+
+        if (normType === "multiplechoice" || normType === "checkboxes") {
+          const selected = val.split(", ").filter(Boolean);
+          if (selected.length === 0) {
+            sectionErrors[q.id] = "This question is required";
+            continue;
+          }
+        }
+      }
+
+      if (val) {
+        if (normType === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) {
+          sectionErrors[q.id] = "Please enter a valid email address";
+        } else if (normType === "url" && !/^https?:\/\/.+/i.test(val)) {
+          sectionErrors[q.id] = "Please enter a valid URL (starting with http:// or https://)";
         }
       }
     }
 
-    if (Object.keys(newErrors).length > 0) {
-      setErrors(newErrors);
-      return false;
-    }
+    return sectionErrors;
+  }
 
-    setErrors({});
-    return true;
+  function scrollToFirstError(errorIds: string[]) {
+    if (errorIds.length === 0) return;
+    const firstId = errorIds[0];
+    setTimeout(() => {
+      const element = document.getElementById(`question-field-${firstId}`);
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+        const input = element.querySelector("input, textarea, select") as HTMLElement | null;
+        input?.focus?.();
+      }
+    }, 50);
   }
 
   function handleNext() {
-    if (!validateCurrentSection()) return;
-    if (!isLastSection) {
-      setActiveSectionIndex((prev) => prev + 1);
-      formTopRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!activeSection || isAnyFileUploading) return;
+    const sectionErrors = validateSectionQuestions(activeSection);
+
+    if (Object.keys(sectionErrors).length > 0) {
+      setErrors((prev) => ({ ...prev, ...sectionErrors }));
+      scrollToFirstError(Object.keys(sectionErrors));
+      return;
     }
+
+    setActiveSectionIndex((prev) => Math.min(prev + 1, sections.length - 1));
+    formTopRef.current?.scrollIntoView({ behavior: "smooth" });
   }
 
   function handlePrev() {
-    setErrors({});
-    if (!isFirstSection) {
-      setActiveSectionIndex((prev) => prev - 1);
-      formTopRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
+    setActiveSectionIndex((prev) => Math.max(prev - 1, 0));
+    formTopRef.current?.scrollIntoView({ behavior: "smooth" });
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (isSubmitting || submitted) return;
+    if (isSubmitting || isAnyFileUploading) return;
 
-    if (!validateCurrentSection()) return;
+    // Validate entire form across all sections
+    let firstInvalidSectionIndex = -1;
+    let accumulatedErrors: Record<string, string> = {};
+
+    for (let i = 0; i < sections.length; i++) {
+      const sErrors = validateSectionQuestions(sections[i]);
+      if (Object.keys(sErrors).length > 0) {
+        if (firstInvalidSectionIndex === -1) {
+          firstInvalidSectionIndex = i;
+        }
+        accumulatedErrors = { ...accumulatedErrors, ...sErrors };
+      }
+    }
+
+    if (Object.keys(accumulatedErrors).length > 0) {
+      setErrors(accumulatedErrors);
+      if (firstInvalidSectionIndex !== -1 && firstInvalidSectionIndex !== activeSectionIndex) {
+        setActiveSectionIndex(firstInvalidSectionIndex);
+      }
+      scrollToFirstError(Object.keys(accumulatedErrors));
+      return;
+    }
 
     // Build answer list across all sections
     const answers: SubmissionAnswer[] = [];
@@ -250,6 +349,7 @@ export default function PublicForm({ app }: PublicFormProps) {
         answers.push({
           questionId: q.id,
           question: q.label,
+          questionType: q.type,
           answer: ans,
         });
       }
@@ -257,16 +357,77 @@ export default function PublicForm({ app }: PublicFormProps) {
 
     setIsSubmitting(true);
     try {
-      await submissionService.createSubmission(app.id, answers);
-      await applicationService.incrementResponses(app.id);
+      if (submissionId && allowEditing) {
+        // Update existing response
+        await submissionService.updateSubmission(submissionId, answers);
+        setIsUpdatedResponse(true);
+      } else {
+        // Create new response with server-authoritative RPC and idempotency key
+        const newSub = await submissionService.createSubmission(
+          app.id,
+          answers,
+          undefined,
+          undefined,
+          idempotencyKey
+        );
+        setSubmissionId(newSub.id);
+        setIsUpdatedResponse(false);
+      }
       setSubmitted(true);
       formTopRef.current?.scrollIntoView({ behavior: "smooth" });
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to submit form:", err);
-      alert("An error occurred while submitting your application. Please try again.");
+      // Clean up any uploaded files if the submission was rejected by the server
+      for (const ans of answers) {
+        const parsed = parseFileAnswer(ans.answer);
+        if (parsed?.fileId) {
+          fileStorage.deleteFile(parsed.fileId, parsed.storagePath).catch(() => {});
+        }
+      }
+
+      const msg = err?.message || "An error occurred while submitting your application.";
+      if (
+        msg.includes("no longer accepting responses") ||
+        msg.includes("submission limit") ||
+        msg.includes("closed") ||
+        msg.includes("deadline") ||
+        msg.includes("not accepting")
+      ) {
+        setIsDynamicallyClosed(true);
+      } else {
+        alert(msg);
+      }
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  async function handleResetForAnotherResponse() {
+    try {
+      const freshApp = await applicationService.getApplication(app.id);
+      if (freshApp && isFormClosed(freshApp)) {
+        setIsDynamicallyClosed(true);
+        setSubmitted(false);
+        return;
+      }
+    } catch (err) {
+      console.error("Failed to check app status:", err);
+    }
+
+    // Generate fresh idempotency key for the new response
+    try {
+      setIdempotencyKey(crypto.randomUUID());
+    } catch {
+      setIdempotencyKey(`idemp-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`);
+    }
+
+    setSubmitted(false);
+    setSubmissionId(null);
+    setIsUpdatedResponse(false);
+    setActiveSectionIndex(0);
+    setFormValues({});
+    setErrors({});
+    formTopRef.current?.scrollIntoView({ behavior: "smooth" });
   }
 
   return (
@@ -280,7 +441,10 @@ export default function PublicForm({ app }: PublicFormProps) {
           {/* Form Header */}
           <div className="px-8 pt-8 pb-5 border-b border-[#E2E8F0]">
             <div className="flex items-center justify-between gap-4 mb-2">
-              <h1 className="text-2xl font-semibold text-[#0F172A] leading-tight">{app.name}</h1>
+              <h1
+                className="text-2xl font-semibold text-[#0F172A] leading-tight"
+                dangerouslySetInnerHTML={{ __html: app.name || "Application" }}
+              />
               {sections.length > 1 && !submitted && (
                 <span className="text-xs font-medium px-2.5 py-1 bg-[#F1F5F9] text-[#64748B] rounded-lg flex-shrink-0">
                   Section {activeSectionIndex + 1} of {sections.length}
@@ -288,7 +452,10 @@ export default function PublicForm({ app }: PublicFormProps) {
               )}
             </div>
             {app.description && (
-              <p className="text-sm text-[#64748B] leading-relaxed">{app.description}</p>
+              <div
+                className="text-sm text-[#64748B] leading-relaxed"
+                dangerouslySetInnerHTML={{ __html: app.description }}
+              />
             )}
           </div>
 
@@ -300,22 +467,37 @@ export default function PublicForm({ app }: PublicFormProps) {
                   <path d="M20 6L9 17l-5-5" />
                 </svg>
               </div>
-              <h2 className="text-xl font-semibold text-[#0F172A] mb-2">Application submitted</h2>
+              <h2 className="text-xl font-semibold text-[#0F172A] mb-2">
+                {isUpdatedResponse ? "Response updated" : "Application submitted"}
+              </h2>
               <p className="text-sm text-[#64748B] max-w-md mx-auto mb-6 leading-relaxed">
-                Thank you for your response. Your application has been recorded.
+                {isUpdatedResponse
+                  ? "Your response has been successfully updated."
+                  : "Thank you for your response. Your application has been recorded."}
               </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setSubmitted(false);
-                  setActiveSectionIndex(0);
-                  setFormValues({});
-                  setErrors({});
-                }}
-                className="px-5 py-2.5 text-xs font-medium text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] rounded-xl transition-colors cursor-pointer"
-              >
-                Submit another response
-              </button>
+
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                {allowEditing && submissionId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSubmitted(false);
+                      setActiveSectionIndex(0);
+                    }}
+                    className="px-5 py-2.5 text-xs font-semibold text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] rounded-xl transition-colors cursor-pointer"
+                  >
+                    Edit your response
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleResetForAnotherResponse}
+                  className="px-5 py-2.5 text-xs font-medium text-[#64748B] hover:text-[#0F172A] border border-[#E2E8F0] hover:bg-[#F8FAFC] rounded-xl transition-colors cursor-pointer"
+                >
+                  Submit another response
+                </button>
+              </div>
             </div>
           ) : (
             /* Active Form Section */
@@ -335,7 +517,7 @@ export default function PublicForm({ app }: PublicFormProps) {
                     {activeSection.questions.map((q) => {
                       const hasError = Boolean(errors[q.id]);
                       return (
-                        <div key={q.id} className="space-y-1.5">
+                        <div key={q.id} id={`question-field-${q.id}`} className="space-y-1.5 scroll-mt-6">
                           <label className="block text-sm font-medium text-[#0F172A]">
                             {q.label}
                             {q.required && <span className="text-red-500 ml-1 font-bold">*</span>}
@@ -347,6 +529,7 @@ export default function PublicForm({ app }: PublicFormProps) {
                             onChange={(val) => handleFieldValueChange(q.id, val)}
                             hasError={hasError}
                             disabled={isSubmitting}
+                            onUploadStateChange={(isUp) => setUploadingFields((prev) => ({ ...prev, [q.id]: isUp }))}
                           />
 
                           {hasError && (
@@ -375,7 +558,7 @@ export default function PublicForm({ app }: PublicFormProps) {
                 {!isFirstSection ? (
                   <button
                     type="button"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || isAnyFileUploading}
                     onClick={handlePrev}
                     className="px-5 py-2.5 text-xs font-medium text-[#64748B] hover:text-[#0F172A] border border-[#E2E8F0] rounded-xl hover:bg-[#F8FAFC] transition-colors cursor-pointer disabled:opacity-50"
                   >
@@ -388,7 +571,7 @@ export default function PublicForm({ app }: PublicFormProps) {
                 {isLastSection ? (
                   <button
                     type="submit"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || isAnyFileUploading}
                     className="px-6 py-2.5 bg-[#2563EB] hover:bg-[#1D4ED8] disabled:bg-[#93C5FD] text-white text-xs font-medium rounded-xl transition-colors cursor-pointer shadow-sm ml-auto flex items-center gap-2"
                   >
                     {isSubmitting ? (
@@ -396,18 +579,25 @@ export default function PublicForm({ app }: PublicFormProps) {
                         <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                           <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="12" />
                         </svg>
-                        <span>Submitting...</span>
+                        <span>{submissionId ? "Updating..." : "Submitting..."}</span>
+                      </>
+                    ) : isAnyFileUploading ? (
+                      <>
+                        <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="12" />
+                        </svg>
+                        <span>Uploading file...</span>
                       </>
                     ) : (
-                      <span>Submit application</span>
+                      <span>{submissionId ? "Update response" : "Submit application"}</span>
                     )}
                   </button>
                 ) : (
                   <button
                     type="button"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || isAnyFileUploading}
                     onClick={handleNext}
-                    className="px-6 py-2.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-medium rounded-xl transition-colors cursor-pointer shadow-sm ml-auto flex items-center gap-1.5"
+                    className="px-6 py-2.5 bg-[#2563EB] hover:bg-[#1D4ED8] disabled:bg-[#93C5FD] text-white text-xs font-medium rounded-xl transition-colors cursor-pointer shadow-sm ml-auto flex items-center gap-1.5"
                   >
                     <span>Next</span>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">

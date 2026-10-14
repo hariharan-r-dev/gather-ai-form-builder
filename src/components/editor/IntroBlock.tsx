@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { Application } from "../../types";
 import { RichTextField, RichToolbar } from "./RichText";
+import { stripHtml, createApplicationSlug } from "../../utils/application";
 
 interface IntroBlockProps {
   app: Application;
@@ -11,6 +12,20 @@ export default function IntroBlock({ app, onUpdateApp }: IntroBlockProps) {
   const titleRef = useRef<HTMLDivElement>(null);
   const descRef = useRef<HTMLDivElement>(null);
   const [focusedField, setFocusedField] = useState<"title" | "desc" | null>(null);
+
+  function handleNameChange(v: string) {
+    const clean = stripHtml(v);
+    const shouldUpdateSlug =
+      !app.slug ||
+      app.slug === "untitled-form" ||
+      app.slug === createApplicationSlug(app.name);
+
+    onUpdateApp({
+      ...app,
+      name: v,
+      slug: shouldUpdateSlug ? createApplicationSlug(clean) : app.slug,
+    });
+  }
 
   return (
     <div className="bg-white border border-[#E2E8F0] rounded-2xl mb-4 overflow-hidden shadow-sm">
@@ -57,7 +72,7 @@ export default function IntroBlock({ app, onUpdateApp }: IntroBlockProps) {
         )}
         <RichTextField
           html={app.name}
-          onChange={(v) => onUpdateApp({ ...app, name: v })}
+          onChange={handleNameChange}
           placeholder="Application title"
           className="text-xl font-semibold text-[#0F172A] leading-snug"
           externalToolbar

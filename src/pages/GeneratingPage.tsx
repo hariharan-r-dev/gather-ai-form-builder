@@ -2,6 +2,8 @@ import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useUIState, useApplications, useCurrentApplication } from "../app/AppProvider";
 import { generateApplication } from "../services/ai/generateApplication";
+import { isValidFormCreationPrompt, isAmbiguousText } from "../services/ai/intentValidation";
+import { AskGatherMessage } from "../types";
 import GeneratingScreen from "../components/GeneratingScreen";
 
 export default function GeneratingPage() {
@@ -16,11 +18,19 @@ export default function GeneratingPage() {
 
   const runGeneration = async () => {
     const cleanPrompt = generatePrompt ? generatePrompt.trim() : "";
-    if (!cleanPrompt) {
-      setError("Describe the application you want to create.");
+
+    // 1. If empty or unrelated input, DO NOT block or error — navigate to editor with clean form
+    if (!cleanPrompt || !isValidFormCreationPrompt(cleanPrompt)) {
+      setGeneratedData({
+        name: "Untitled Form",
+        description: "",
+        sections: [],
+        isUnrelated: true,
+      });
       return;
     }
 
+    // 2. Valid form creation prompt — call AI generator
     try {
       const result = await generateApplication(cleanPrompt);
       setGeneratedData(result);
@@ -39,14 +49,44 @@ export default function GeneratingPage() {
     }
   }, []);
 
-  // Sync completion when both steps animation is finished and API data has resolved
+  // Sync completion when both animation steps are finished and generation has resolved
   useEffect(() => {
     if (animationDone && generatedData) {
+      const prompt = generatePrompt ? generatePrompt.trim() : "";
+      let initialHistory: AskGatherMessage[] | undefined;
+
+      if (generatedData.isUnrelated) {
+        let assistantMsg = "";
+        if (isAmbiguousText(prompt)) {
+          assistantMsg = "Sure — what would you like to improve? I can help with question wording, structure, sections, required fields, or answer types.";
+        } else {
+          assistantMsg = "It seems like your message isn't related to building or editing your form. I'm here to help you create and edit your form — for example, adding or removing questions, changing question types, editing sections, or improving your questions.\n\nWhat would you like to change?";
+        }
+
+        initialHistory = [
+          {
+            id: `msg-init-user-${Date.now()}`,
+            role: "user",
+            content: prompt || "New Form",
+            createdAt: new Date().toISOString(),
+          },
+          {
+            id: `msg-init-assistant-${Date.now() + 1}`,
+            role: "assistant",
+            content: assistantMsg,
+            createdAt: new Date().toISOString(),
+            feedback: null,
+            mutation: false,
+          },
+        ];
+      }
+
       createApp(
         generatedData.name,
         generatedData.description,
         generatedData.sections,
-        generatePrompt.trim()
+        prompt,
+        initialHistory
       )
         .then((app) => {
           setCurrentApp(app);
@@ -73,7 +113,7 @@ export default function GeneratingPage() {
           <p className="text-sm text-[#64748B] mb-6 leading-relaxed">{error}</p>
           <div className="flex items-center justify-center gap-3">
             <button
-              onClick={() => navigate("/")}
+              onClick={() => navigate("/app")}
               className="px-4 py-2 border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] text-sm font-medium rounded-xl transition-colors cursor-pointer"
             >
               Back

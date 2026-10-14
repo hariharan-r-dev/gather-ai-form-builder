@@ -53,23 +53,46 @@ export interface AskGatherMessage {
 
 export type AIMessage = AskGatherMessage;
 
+export interface FormEndTimeSetting {
+  enabled: boolean;
+  date?: string; // YYYY-MM-DD
+  time?: string; // HH:mm
+}
+
+export interface SubmissionLimitSetting {
+  enabled: boolean;
+  limit?: number;
+}
+
+export interface FormSettings {
+  endTime?: FormEndTimeSetting;
+  submissionLimit?: SubmissionLimitSetting;
+  allowResponseEditing?: boolean;
+  defaultQuestionRequired?: boolean;
+}
+
 export interface Application {
   id: string;
   name: string;
   status: AppStatus;
   responses: number;
   lastUpdated: string;
+  publishedAt?: string;
+  isPublic?: boolean;
+  publicId?: string;
+  slug: string;
   sections: Section[];
   description: string;
-  slug: string;
   coverImage?: string;
   creationPrompt?: string;
   askGatherHistory?: AskGatherMessage[];
+  settings?: FormSettings;
 }
 
 export interface SubmissionAnswer {
   questionId: string;
   question: string;
+  questionType?: string;
   answer: string;
 }
 
@@ -80,6 +103,7 @@ export interface Submission {
   email: string;
   submitted: string;
   submittedAt?: string;
+  updatedAt?: string;
   answers: SubmissionAnswer[];
   notes: string;
 }

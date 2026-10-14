@@ -1,18 +1,31 @@
-import { Application, AskGatherMessage } from "../../types";
+import { Application, AskGatherMessage, Section } from "../../types";
 import { editApplication } from "./editApplication";
 import { answerAskGather } from "./answerAskGather";
+import { generateApplication } from "./generateApplication";
+import { buildCreationSummary } from "../../utils/creationSummary";
 import { IntentDetectionResponseSchema } from "./formSchema";
+import {
+  isGibberishText,
+  isGreetingText,
+  isOffTopicText,
+  isAmbiguousText,
+  isValidFormCreationPrompt,
+  isValidFormEditInstruction,
+} from "./intentValidation";
 
 const DEFAULT_MODEL = "google/gemini-2.5-flash";
 
 export type AskGatherIntent =
+  | "FORM_CREATE"
   | "FORM_EDIT"
+  | "FORM_INFO"
+  | "GENERAL"
+  | "AMBIGUOUS"
   | "FORM_RELATED_CHAT"
-  | "OUT_OF_SCOPE"
-  | "AMBIGUOUS";
+  | "OUT_OF_SCOPE";
 
 export interface AskGatherResult {
-  type: "edit" | "form_chat" | "out_of_scope" | "ambiguous";
+  type: "edit" | "create" | "form_info" | "general" | "ambiguous";
   updatedApp?: Application;
   message: string;
 }
@@ -37,83 +50,109 @@ export async function detectIntent(
   currentApp: Application,
   history: AskGatherMessage[] = []
 ): Promise<{ intent: AskGatherIntent; clarificationMessage?: string }> {
+  const cleanMessage = userMessage.trim();
+  const lower = cleanMessage.toLowerCase();
+
+  // 1. FAST DETERMINISTIC GATES (Zero hallucination risk)
+  if (isGibberishText(cleanMessage)) {
+    return { intent: "GENERAL" };
+  }
+
+  if (isGreetingText(cleanMessage)) {
+    return { intent: "GENERAL" };
+  }
+
+  if (isOffTopicText(cleanMessage)) {
+    return { intent: "GENERAL" };
+  }
+
+  if (isAmbiguousText(cleanMessage)) {
+    return { intent: "AMBIGUOUS" };
+  }
+
+  // Fast-path for common form info queries
+  if (
+    lower.startsWith("how many section") ||
+    lower.startsWith("how many question") ||
+    lower.includes("what questions are required") ||
+    lower.includes("which questions are required") ||
+    lower.includes("what fields are required") ||
+    lower.includes("list the sections") ||
+    lower.includes("list questions")
+  ) {
+    return { intent: "FORM_INFO" };
+  }
+
+  // Fast-path for verified form edit commands
+  if (isValidFormEditInstruction(cleanMessage)) {
+    return { intent: "FORM_EDIT" };
+  }
+
+  // 2. OPENROUTER STRUCTURED INTENT CLASSIFIER
   const apiKey = import.meta.env.VITE_OPENROUTER_API_KEY;
   const model = import.meta.env.VITE_OPENROUTER_MODEL || DEFAULT_MODEL;
 
   if (!apiKey) {
-    throw new Error(
-      "OpenRouter API key is missing. Please configure VITE_OPENROUTER_API_KEY in your environment variables."
-    );
+    return { intent: "GENERAL" };
   }
 
-  // Pre-check for known quick suggestion triggers (always FORM_EDIT)
-  const knownSuggestions = [
-    "Add a portfolio question",
-    "Make these questions shorter",
-    "Add a leadership question",
-    "Make this suitable for students",
-    "Improve these questions",
-  ];
-  if (knownSuggestions.includes(userMessage.trim())) {
-    return { intent: "FORM_EDIT" };
-  }
+  const systemPrompt = `You are Gather's strict intent classification engine for the form editor.
+Your ONLY job is to categorize the user's message into one of five categories.
 
-  const systemPrompt = `You are Gather's intent classification engine for the form editor.
-Your job is to determine what the user is trying to do with strict precision.
+CATEGORIES:
 
-CLASSIFY INTO EXACTLY ONE OF THESE FOUR CATEGORIES:
-
-1. "FORM_EDIT":
-   The user explicitly wants to create, change, remove, reorder, or configure something in the current form.
-   Strong edit actions: add, remove, delete, change, make required, make optional, shorten, add options, rename section, convert to dropdown, etc.
+1. "FORM_CREATE":
+   User explicitly wants to create or build a completely new form from scratch with clear domain requirements.
    Examples:
-   - "Add a portfolio question." -> FORM_EDIT
-   - "Remove date of birth." -> FORM_EDIT
-   - "Make email optional." -> FORM_EDIT
-   - "Change experience to a dropdown." -> FORM_EDIT
-   - "Add a section called Motivation." -> FORM_EDIT
-   - "Make these questions shorter." -> FORM_EDIT
-   - "Add options: Beginner, Intermediate, Advanced." -> FORM_EDIT
-   - "Move this question to Background." -> FORM_EDIT
-   - "Make that question optional." (referring to a previous edit in history) -> FORM_EDIT
+   - "Create a volunteer application for a community event" -> FORM_CREATE
+   - "Build a job application for a junior UX designer" -> FORM_CREATE
+   - "I need a registration form for a conference" -> FORM_CREATE
 
-2. "FORM_RELATED_CHAT":
-   The user is asking a question or seeking explanation/feedback ABOUT the current form, form design, questions, or choices, but is NOT asking to mutate the form.
+2. "FORM_EDIT":
+   User explicitly commands adding, removing, updating, reordering, or modifying questions/sections in the current form.
    Examples:
-   - "What questions are currently in this form?" -> FORM_RELATED_CHAT
-   - "Why did you add this question?" -> FORM_RELATED_CHAT
-   - "Why is this question required?" -> FORM_RELATED_CHAT
-   - "How many questions are in the form?" -> FORM_RELATED_CHAT
-   - "Is this form suitable for a job application?" -> FORM_RELATED_CHAT
-   - "What kind of questions should a volunteer application have?" -> FORM_RELATED_CHAT
+   - "Add a portfolio question" -> FORM_EDIT
+   - "Remove date of birth" -> FORM_EDIT
+   - "Make email required" -> FORM_EDIT
+   - "Make these questions shorter" -> FORM_EDIT
+   - "Change phone number to optional" -> FORM_EDIT
+   - "Add a leadership section" -> FORM_EDIT
 
-3. "OUT_OF_SCOPE":
-   The user's message is unrelated to creating, building, configuring, or understanding their Gather form (e.g. general trivia, off-topic chat, poems, jokes, weather, unrelated subjects).
+3. "FORM_INFO":
+   User is asking a factual question about the current form without asking to modify it.
    Examples:
-   - "Can you tell me about two line dog?" -> OUT_OF_SCOPE
-   - "What is the weather today?" -> OUT_OF_SCOPE
-   - "Write me a poem." -> OUT_OF_SCOPE
-   - "Who is Elon Musk?" -> OUT_OF_SCOPE
-   - "Tell me a joke." -> OUT_OF_SCOPE
-   - "Help me calculate my taxes." -> OUT_OF_SCOPE
-   - "What's the capital of France?" -> OUT_OF_SCOPE
+   - "How many sections does this form have?" -> FORM_INFO
+   - "How many questions are in the form?" -> FORM_INFO
+   - "What fields are currently required?" -> FORM_INFO
+   - "What questions have you added?" -> FORM_INFO
 
-4. "AMBIGUOUS":
-   The user wants a form change but gave a vague, underspecified instruction without indicating what specifically should change.
+4. "GENERAL":
+   The message is meaningless, random gibberish ("sdf", "werwer", "asdfgh"), a greeting ("hello"), off-topic, jokes, trivia ("what is a dog", "tell me a joke", "what is ux design", "two line dog"), or not related to form building.
    Examples:
-   - "Fix it." -> AMBIGUOUS
-   - "Make it better." -> AMBIGUOUS
-   - "Change this." -> AMBIGUOUS
-   - "Improve it." -> AMBIGUOUS
-   - "Update the form." -> AMBIGUOUS
+   - "werwer" -> GENERAL
+   - "sdf" -> GENERAL
+   - "asdfgh" -> GENERAL
+   - "hello" -> GENERAL
+   - "what is a dog" -> GENERAL
+   - "tell me a joke" -> GENERAL
+   - "Can you tell me about two line dog" -> GENERAL
+   - "what is ux design" -> GENERAL
+
+5. "AMBIGUOUS":
+   The user wants a form change but provided an underspecified instruction without indicating what specifically should change.
+   Examples:
+   - "Make it better" -> AMBIGUOUS
+   - "Change this" -> AMBIGUOUS
+   - "Improve it" -> AMBIGUOUS
+   - "Update the form" -> AMBIGUOUS
 
 CRITICAL SAFETY RULE:
-Only choose "FORM_EDIT" if the user explicitly commanded an action on form fields/sections.
-If uncertain or if the request is off-topic, choose "OUT_OF_SCOPE" or "AMBIGUOUS". NEVER default to "FORM_EDIT".
+Never classify random words, gibberish, greetings, or off-topic questions as FORM_CREATE or FORM_EDIT.
+If there is no concrete form operation or creation request, choose GENERAL or AMBIGUOUS.
 
-Return ONLY valid JSON:
+Output ONLY valid JSON:
 {
-  "intent": "FORM_EDIT" | "FORM_RELATED_CHAT" | "OUT_OF_SCOPE" | "AMBIGUOUS",
+  "intent": "FORM_CREATE" | "FORM_EDIT" | "FORM_INFO" | "GENERAL" | "AMBIGUOUS",
   "confidence": 0.95,
   "reasoning": "brief explanation"
 }
@@ -134,7 +173,7 @@ Return ONLY valid JSON:
 
   messages.push({
     role: "user",
-    content: `Current Form: "${currentApp.name}"\nUser Message: "${userMessage}"`,
+    content: `Current Form: "${currentApp.name}"\nUser Message: "${cleanMessage}"`,
   });
 
   try {
@@ -149,30 +188,44 @@ Return ONLY valid JSON:
       body: JSON.stringify({
         model,
         max_tokens: 256,
+        temperature: 0,
         response_format: { type: "json_object" },
         messages,
       }),
     });
 
     if (!response.ok) {
-      return { intent: "OUT_OF_SCOPE" };
+      return { intent: "GENERAL" };
     }
 
     const data = await response.json();
     const rawText = data.choices?.[0]?.message?.content;
-    if (!rawText) return { intent: "OUT_OF_SCOPE" };
+    if (!rawText) return { intent: "GENERAL" };
 
     const cleaned = cleanJsonResponse(rawText);
     const parsed = JSON.parse(cleaned);
     const validated = IntentDetectionResponseSchema.parse(parsed);
 
+    let normalizedIntent: AskGatherIntent = validated.intent;
+    if (normalizedIntent === "OUT_OF_SCOPE") normalizedIntent = "GENERAL";
+    if (normalizedIntent === "FORM_RELATED_CHAT") normalizedIntent = "FORM_INFO";
+
+    // 3. POST-CLASSIFICATION VALIDATION GATE
+    if (normalizedIntent === "FORM_CREATE" && !isValidFormCreationPrompt(cleanMessage)) {
+      normalizedIntent = "GENERAL";
+    }
+
+    if (normalizedIntent === "FORM_EDIT" && (isGibberishText(cleanMessage) || isOffTopicText(cleanMessage))) {
+      normalizedIntent = "GENERAL";
+    }
+
     return {
-      intent: validated.intent,
+      intent: normalizedIntent,
       clarificationMessage: validated.clarificationMessage,
     };
   } catch (err) {
-    console.warn("Intent detection fallback to OUT_OF_SCOPE:", err);
-    return { intent: "OUT_OF_SCOPE" };
+    console.warn("Intent detection fallback to GENERAL:", err);
+    return { intent: "GENERAL" };
   }
 }
 
@@ -184,7 +237,7 @@ export async function processAskGatherMessage(
   const cleanMessage = userMessage.trim();
   if (!cleanMessage) {
     return {
-      type: "out_of_scope",
+      type: "general",
       message: "Please enter an instruction or question regarding your form.",
     };
   }
@@ -192,54 +245,108 @@ export async function processAskGatherMessage(
   // 1. Classify Intent
   const { intent } = await detectIntent(cleanMessage, currentApp, history);
 
-  // 2. Route based strictly on intent
-  if (intent === "FORM_EDIT") {
-    // FORM_EDIT: Allowed to mutate application
-    const editResult = await editApplication(currentApp, cleanMessage, history);
-    return {
-      type: "edit",
-      updatedApp: editResult.updatedApp,
-      message: editResult.explanation,
-    };
-  }
+  const mutationAllowed = intent === "FORM_EDIT" || intent === "FORM_CREATE";
+  console.log("[Ask Gather] User message:", cleanMessage);
+  console.log("[Ask Gather] Intent:", intent);
+  console.log("[Ask Gather] Mutation allowed:", mutationAllowed);
 
-  if (intent === "FORM_RELATED_CHAT") {
-    // FORM_RELATED_CHAT: Answer in form context, NO mutation
-    const answer = await answerAskGather(
-      currentApp,
-      cleanMessage,
-      history,
-      "FORM_RELATED_CHAT"
-    );
-    return {
-      type: "form_chat",
-      message: answer,
-    };
-  }
+  // 2. Strict Intent Routing
+  switch (intent) {
+    case "FORM_EDIT": {
+      try {
+        const editResult = await editApplication(currentApp, cleanMessage, history);
+        return {
+          type: "edit",
+          updatedApp: editResult.updatedApp,
+          message: editResult.explanation,
+        };
+      } catch (err: any) {
+        console.error("Form edit failed:", err);
+        return {
+          type: "general",
+          message: err.message || "I couldn't process that edit safely. Could you describe what you'd like to change?",
+        };
+      }
+    }
 
-  if (intent === "OUT_OF_SCOPE") {
-    // OUT_OF_SCOPE: Explain Ask Gather's form-building purpose and redirect, NO mutation
-    const scopeResponse = await answerAskGather(
-      currentApp,
-      cleanMessage,
-      history,
-      "OUT_OF_SCOPE"
-    );
-    return {
-      type: "out_of_scope",
-      message: scopeResponse,
-    };
-  }
+    case "FORM_CREATE": {
+      // Gate: Form creation requires an actual valid creation prompt
+      if (!isValidFormCreationPrompt(cleanMessage)) {
+        const safeResponse = await answerAskGather(currentApp, cleanMessage, history, "GENERAL");
+        return {
+          type: "general",
+          message: safeResponse,
+        };
+      }
 
-  // intent === "AMBIGUOUS": Ask for clarification, NO mutation
-  const clarification = await answerAskGather(
-    currentApp,
-    cleanMessage,
-    history,
-    "AMBIGUOUS"
-  );
-  return {
-    type: "ambiguous",
-    message: clarification,
-  };
+      try {
+        const generated = await generateApplication(cleanMessage);
+        const updatedApp: Application = {
+          ...currentApp,
+          name: generated.name,
+          description: generated.description,
+          sections: generated.sections as Section[],
+          lastUpdated: "just now",
+        };
+
+        const summary = buildCreationSummary(generated.name, generated.sections as Section[]);
+        return {
+          type: "create",
+          updatedApp,
+          message: summary,
+        };
+      } catch (err: any) {
+        console.error("Form creation via Ask Gather failed:", err);
+        return {
+          type: "general",
+          message: "Something went wrong while generating the application. Please try describing your form again.",
+        };
+      }
+    }
+
+    case "FORM_INFO":
+    case "FORM_RELATED_CHAT": {
+      // Read-only response from current form state. ZERO mutation.
+      const answer = await answerAskGather(
+        currentApp,
+        cleanMessage,
+        history,
+        "FORM_INFO"
+      );
+      return {
+        type: "form_info",
+        message: answer,
+      };
+    }
+
+    case "AMBIGUOUS": {
+      // Ask for clarification. ZERO mutation.
+      const clarification = await answerAskGather(
+        currentApp,
+        cleanMessage,
+        history,
+        "AMBIGUOUS"
+      );
+      return {
+        type: "ambiguous",
+        message: clarification,
+      };
+    }
+
+    case "GENERAL":
+    case "OUT_OF_SCOPE":
+    default: {
+      // Safe general scope response. ZERO mutation.
+      const scopeResponse = await answerAskGather(
+        currentApp,
+        cleanMessage,
+        history,
+        "GENERAL"
+      );
+      return {
+        type: "general",
+        message: scopeResponse,
+      };
+    }
+  }
 }

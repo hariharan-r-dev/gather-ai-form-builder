@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Application } from "../types";
 import { applicationService } from "../services/applications/applicationService";
+import { isFormClosed, stripHtml } from "../utils/application";
 import PublicForm from "../components/PublicForm";
 
 export default function PublicFormPage() {
@@ -53,7 +54,7 @@ export default function PublicFormPage() {
         </div>
         <h1 className="text-xl font-semibold text-[#0F172A] mb-2">Application not found</h1>
         <p className="text-xs text-[#64748B] max-w-sm mb-6 leading-relaxed">
-          The form you're looking for doesn't exist or may have been deleted.
+          The form you&apos;re looking for doesn&apos;t exist or may have been deleted.
         </p>
         <Link
           to="/"
@@ -65,7 +66,7 @@ export default function PublicFormPage() {
     );
   }
 
-  if (app.status !== "published") {
+  if (app.status === "draft") {
     return (
       <div className="w-full min-h-full py-16 flex flex-col items-center justify-center p-6 text-center">
         <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center mx-auto mb-4 text-amber-600">
@@ -74,9 +75,33 @@ export default function PublicFormPage() {
             <path d="M7 11V7a5 5 0 0 1 10 0v4" />
           </svg>
         </div>
-        <h1 className="text-xl font-semibold text-[#0F172A] mb-2">This application isn't published yet</h1>
+        <h1 className="text-xl font-semibold text-[#0F172A] mb-2">This application isn&apos;t published yet</h1>
         <p className="text-xs text-[#64748B] max-w-sm mb-6 leading-relaxed">
           The owner has not made this form publicly available. Please check back later or contact the organization.
+        </p>
+        <Link
+          to="/"
+          className="px-4 py-2 bg-white border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] text-xs font-medium rounded-xl transition-colors"
+        >
+          Go to Gather Home
+        </Link>
+      </div>
+    );
+  }
+
+  if (isFormClosed(app)) {
+    return (
+      <div className="w-full min-h-full py-16 flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-12 h-12 bg-[#F1F5F9] rounded-2xl flex items-center justify-center mx-auto mb-4 text-[#64748B]">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+          </svg>
+        </div>
+        <h1 className="text-xl font-semibold text-[#0F172A] mb-2">{stripHtml(app.name)}</h1>
+        <p className="text-sm font-semibold text-[#0F172A] mb-1">This form is no longer accepting responses.</p>
+        <p className="text-xs text-[#64748B] max-w-sm mb-6 leading-relaxed">
+          The form has reached its configured closing date or submission limit. Please contact the form creator if you believe this is an error.
         </p>
         <Link
           to="/"

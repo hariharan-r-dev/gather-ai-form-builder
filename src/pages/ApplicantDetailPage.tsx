@@ -96,15 +96,16 @@ export default function ApplicantDetailPage() {
         showMoreMenu={false}
         setShowMoreMenu={() => {}}
         plan={plan}
-        onBilling={() => navigate("/pricing")}
-        onUpgrade={() => navigate("/pricing")}
-        onSettings={() => navigate("/settings")}
+        onBilling={() => navigate("/pricing", { state: { from: `/applications/${id}/responses/${submissionId}` } })}
+        onUpgrade={() => navigate("/pricing", { state: { from: `/applications/${id}/responses/${submissionId}` } })}
+        onSettings={() => navigate("/settings", { state: { from: `/applications/${id}/responses/${submissionId}` } })}
         onSearchClick={() => setShowSearch(true)}
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">
         <ApplicantDetail
           applicant={applicant}
+          app={app || undefined}
           onBack={() => navigate(`/applications/${id}/responses`)}
         />
       </main>

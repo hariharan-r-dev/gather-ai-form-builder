@@ -1,0 +1,5 @@
+Applicant Portfolio Notes:
+
+1. Over 5 years of UX design experience.
+2. Built design systems for fintech.
+3. Proficient in Figma, React, and Tailwind.
